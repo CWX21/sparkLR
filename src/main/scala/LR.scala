@@ -21,7 +21,7 @@ object LR {
 		val conf = new SparkConf().setAppName("Simple Application").setMaster("local")
 				val sc = new SparkContext(conf)
 
-		val fileName = "/home/hadoop/data/sparkdata/Posts.xml"
+		val fileName = "/home/hadoop/data/sparkdata/Posts.small.xml"
 		val textFile = sc.textFile(fileName)
 		val postsXml = textFile.map(_.trim).filter(!_.startsWith("﻿<?xml version=")).filter(_ != "<posts>").filter(_ != "</posts>")
 
@@ -50,14 +50,32 @@ object LR {
 				val negative = postsLabeled.filter(postsLabeled("Label") < 1.0)
 				val positiveTrain = positive.sample(false, 0.9)
 				val negativeTrain = negative.sample(false, 0.9)
-				val training = positiveTrain.union(negativeTrain).show()
+				val training = positiveTrain.union(negativeTrain)
 
 				val negativeTrainTmp = negativeTrain.withColumnRenamed("Label", "Flag").select("Id", "Flag")
 				val negativeTest = negative.join( negativeTrainTmp, negative("Id") === negativeTrainTmp("Id"),"LeftOuter").filter("Flag is null").select(negative("Id"), negative("Tags"), negative("Text"), negative("Label"))
 				val positiveTrainTmp = positiveTrain.withColumnRenamed("Label", "Flag").select("Id", "Flag")
 				val positiveTest = positive.join( positiveTrainTmp, positive("Id") === positiveTrainTmp("Id"), "LeftOuter").filter("Flag is null").select(positive("Id"), positive("Tags"), positive("Text"), positive("Label"))
-				val testing = negativeTest.union(positiveTest).show()
+				val testing = negativeTest.union(positiveTest)
 
-				sc.stop   
+				val numFeatures = 64000
+				val numEpochs = 30
+				val regParam = 0.02
+
+				val tokenizer = new Tokenizer().setInputCol("Text").setOutputCol("Words")
+				val hashingTF = new HashingTF().setNumFeatures(numFeatures).setInputCol(tokenizer.getOutputCol).setOutputCol("Features")
+				val lr = new LogisticRegression().setMaxIter(numEpochs).setRegParam(regParam).setFeaturesCol("Features").setLabelCol("Label").setRawPredictionCol("Score").setPredictionCol("Prediction")
+
+				val pipeline = new Pipeline().setStages(Array(tokenizer, hashingTF, lr))
+				val model = pipeline.fit(training)
+
+				val testingResult = model.transform(testing)
+				val testingResultScores = testingResult.select("Prediction", "Label").rdd.map(r => (r(0).asInstanceOf[Double], r(1).asInstanceOf[Double]))
+				val bc = new BinaryClassificationMetrics(testingResultScores)
+		val roc = bc.areaUnderROC
+
+		print("Area under the ROC:" + roc)
+
+		sc.stop   
 	}
 }
